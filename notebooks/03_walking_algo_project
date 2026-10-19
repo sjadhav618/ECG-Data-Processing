@@ -1,0 +1,166 @@
+"""
+End-to-End Activity Recognition & Feature Extraction Pipeline
+-------------------------------------------------------------
+This script simulates raw wearable accelerometer data, processes it into 
+sliding windows, extracts professional time- and frequency-domain features, 
+and trains a machine learning model to classify activities (e.g., resting vs. walking).
+"""
+
+import numpy as np
+import pandas as pd
+from scipy.signal import welch
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report
+
+
+# ==========================================
+# STEP 1: Simulate Raw Accelerometer Data
+# ==========================================
+def generate_sample_accelerometer_data(duration_sec=60, sampling_rate_hz=50):
+    """
+    Simulates raw 3-axis (X, Y, Z) accelerometer data collected from a wearable device.
+    
+    Why: In real life, your device records acceleration in Gs along 3 spatial dimensions 
+    at a fixed sampling rate (e.g., 50 times per second).
+    """
+    num_samples = duration_sec * sampling_rate_hz
+    # Create timestamps in milliseconds (just like your production code!)
+    timestamps = np.linspace(0, duration_sec * 1000, num_samples, dtype=int)
+    time_seconds = np.linspace(0, duration_sec, num_samples)
+    
+    # Baseline: Standing/Sitting still (Y-axis picks up 1.0g due to gravity)
+    acc_x = np.random.normal(0, 0.05, num_samples)
+    acc_y = np.random.normal(1.0, 0.05, num_samples)  # Gravity pull on Y
+    acc_z = np.random.normal(0, 0.05, num_samples)
+    labels = np.array(['resting'] * num_samples, dtype=object)
+    
+    # Inject a "walking" activity burst between second 15 and 45
+    # Walking creates rhythmic body oscillations around 2.0 Hz
+    walking_mask = (time_seconds >= 15) & (time_seconds < 45)
+    acc_x[walking_mask] += 0.7 * np.sin(2 * np.pi * 2.0 * time_seconds[walking_mask])
+    acc_z[walking_mask] += 0.5 * np.cos(2 * np.pi * 2.0 * time_seconds[walking_mask])
+    labels[walking_mask] = 'walking'
+    
+    return timestamps, acc_x, acc_y, acc_z, labels, sampling_rate_hz
+
+
+# ==========================================
+# STEP 2: Feature Extraction for a Single Window
+# ==========================================
+def extract_features_for_window(window_data, sampling_rate_hz):
+    """
+    Extracts statistical (time-domain) and spectral (frequency-domain) features 
+    from a single chunk (window) of accelerometer data.
+    """
+    window_features = {}
+    
+    # --- A. TIME-DOMAIN FEATURES ---
+    # Percentiles capture peak movement intensity
+    window_features["percentile_95th"] = np.percentile(window_data, 95)
+    window_features["percentile_99th"] = np.percentile(window_data, 99)
+    
+    # Inter-percentile ranges measure how much the signal spreads out
+    window_features["range_75_25"] = np.percentile(window_data, 75) - np.percentile(window_data, 25)
+    
+    # Actigraphy standard deviation measures overall movement volatility
+    window_features["actigraphy"] = np.std(window_data)
+    
+    # Mean Absolute Deviation (MAD): robust measure of dispersion around the average
+    window_features["mean_absolute_deviation"] = np.mean(np.abs(window_data - np.mean(window_data)))
+    
+    # --- B. FREQUENCY-DOMAIN FEATURES ---
+    # Center the signal around zero by subtracting its mean (removes DC offset)
+    window_centered = window_data - np.mean(window_data)
+    
+    # Compute Power Spectral Density (PSD) using Welch's method
+    # Why: This converts time data into frequency data, showing where movement power is concentrated.
+    nperseg = min(128, len(window_centered))
+    freqs, psd = welch(window_centered, fs=sampling_rate_hz, nperseg=nperseg)
+    
+    # Measure energy in the human walking frequency band (1.0 Hz to 3.0 Hz)
+    # Why: Human steps happen rhythmically within this band.
+    walking_band_mask = (freqs >= 1.0) & (freqs <= 3.0)
+    band_energy = np.trapz(psd[walking_band_mask], freqs[walking_band_mask]) if np.any(walking_band_mask) else 0.0
+    
+    # Log-transform the energy to handle wide numerical ranges smoothly
+    with np.errstate(divide="ignore", invalid="ignore"):
+        window_features["log_psd_1_0_3_0Hz"] = np.log10(band_energy + 1e-6)
+        
+    # --- C. DETERMINISTIC SORTING ---
+    # Why: Machine learning models require features to always be in the exact same column order.
+    # Sorting alphabetically guarantees safety between training and live inference!
+    sorted_features = dict(sorted(window_features.items(), key=lambda item: item[0]))
+    
+    return sorted_features
+
+
+# ==========================================
+# STEP 3: The Pipeline Orchestrator
+# ==========================================
+def run_feature_pipeline(timestamps, acc_x, acc_y, acc_z, labels, fs, window_size_sec=2, window_shift_sec=1):
+    """
+    Orchestrates the entire pipeline: calculates ENMO, cuts the stream into 
+    sliding windows, and runs feature extraction.
+    """
+    window_len_samples = window_size_sec * fs
+    window_shift_samples = window_shift_sec * fs
+    
+    # 1. Compute Euclidean Norm Minus One (ENMO)
+    # Why ENMO instead of raw magnitude? 
+    # Raw magnitude includes the permanent 1.0g pull of gravity. 
+    # Subtracting 1.0 (and clipping negatives at 0) leaves *only* dynamic human movement!
+    raw_magnitude = np.sqrt(acc_x**2 + acc_y**2 + acc_z**2)
+    enmo = np.maximum(raw_magnitude - 1.0, 0.0)
+    
+    feature_rows = []
+    window_labels = []
+    
+    # 2. Sliding Window Loop
+    start_idx = 0
+    while start_idx + window_len_samples <= len(enmo):
+        end_idx = start_idx + window_len_samples
+        
+        # Slice out a window of movement data
+        window = enmo[start_idx:end_idx]
+        chunk_labels = labels[start_idx:end_idx]
+        
+        # Determine the dominant label for this window (e.g., mostly 'walking')
+        dominant_label = pd.Series(chunk_labels).mode()[0]
+        
+        # 3. Extract features for this specific window
+        features = extract_features_for_window(window, fs)
+        
+        feature_rows.append(features)
+        window_labels.append(dominant_label)
+        
+        # Move the window forward by our shift size (creates overlap)
+        start_idx += window_shift_samples
+        
+    return pd.DataFrame(feature_rows), pd.Series(window_labels)
+
+
+# ==========================================
+# STEP 4: Execution & Model Training
+# ==========================================
+if __name__ == "__main__":
+    print("1. Generating simulated sensor stream...")
+    ts, ax, ay, az, lbls, sampling_rate = generate_sample_accelerometer_data()
+    
+    print("2. Running feature extraction pipeline...")
+    X, y = run_pipeline_data = run_feature_pipeline(ts, ax, ay, az, lbls, sampling_rate)
+    
+    print(f"\nExtracted Feature Matrix Shape: {X.shape} (Windows x Features)")
+    print("Alphabetical Feature Columns:", list(X.columns))
+    
+    print("\n3. Training a Machine Learning Classifier...")
+    # Split data into training and testing sets
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+    
+    # Train a Random Forest model
+    model = RandomForestClassifier(random_state=42)
+    model.fit(X_train, y_train)
+    
+    print("\n--- Model Evaluation Report ---")
+    predictions = model.predict(X_test)
+    print(classification_report(y_test, predictions))
