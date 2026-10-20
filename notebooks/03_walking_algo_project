@@ -4,6 +4,7 @@ End-to-End Activity Recognition & Feature Extraction Pipeline
 This script simulates raw wearable accelerometer data, processes it into 
 sliding windows, extracts professional time- and frequency-domain features, 
 and trains a machine learning model to classify activities (e.g., resting vs. walking).
+[Placeholder for concept mapping]
 """
 
 import numpy as np
