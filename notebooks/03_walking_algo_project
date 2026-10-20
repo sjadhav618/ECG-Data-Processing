@@ -1,4 +1,6 @@
 """
+Source dataset: HARTH, UCI ML Repository (id 779); 22 subjects, dual-accelerometer, 50 Hz, 12 activities.
+
 End-to-End Activity Recognition & Feature Extraction Pipeline
 -------------------------------------------------------------
 This script simulates raw wearable accelerometer data, processes it into 
