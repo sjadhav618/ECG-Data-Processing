@@ -12,7 +12,7 @@ Clinicians, epidemiologists, data analysts, and students. Each notebook follows 
 
 ## Philosophy & Learning Style
 
-In many machine learning tutorials, code is written like an *incantation*—dense, obscure syntax full of black-box framework abstractions where errors are cryptic and logic is obscured. 
+In many machine learning tutorials, code is written like an *incantation*: dense, obscure syntax full of black-box framework abstractions where errors are cryptic and logic is obscured. 
 
 This repository represents an intentional departure from that approach. As a clinician and epidemiologist, my goal is to build machine learning pipelines that mirror rigorous scientific reasoning:
 * **Code as Plain English:** Every preprocessing step, feature extraction, and model evaluation function is designed to be self-documenting, explicit, and readable—bridging the gap between raw biometric signals and clinical interpretability.
